@@ -2,10 +2,9 @@ version: 0.2
 
 env:
   variables:
-    IMAGE_REPO_NAME: rushplate
+    IMAGE_REPO_NAME: rush-plate
     AWS_DEFAULT_REGION: us-east-1
-  parameter-store:
-    AWS_ACCOUNT_ID: /rushplate/aws-account-id
+    AWS_ACCOUNT_ID: 600105205879
 
 phases:
 
