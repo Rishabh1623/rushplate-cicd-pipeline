@@ -38,9 +38,9 @@ phases:
       - docker push $ECR_URI:$IMAGE_TAG
       - docker push $ECR_URI:latest
       - echo Writing imagedefinitions.json for ECS deploy...
+      - cd ..
       - printf '[{"name":"rushplate-container","imageUri":"%s"}]' $ECR_URI:$IMAGE_TAG > imagedefinitions.json
 
 artifacts:
   files:
-    - rushplate/imagedefinitions.json
-  name: BuildArtifact
+    - imagedefinitions.json
