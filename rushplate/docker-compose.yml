@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  rushplate-api:
+    build: .
+    ports:
+      - "80:80"
+    volumes:
+      - ./app:/app/app   # hot reload during dev
+    environment:
+      - ENV=local
+    restart: unless-stopped
