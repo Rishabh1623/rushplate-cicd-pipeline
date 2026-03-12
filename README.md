@@ -188,6 +188,311 @@ rushplate-cicd-pipeline/
 └── README.md               # Project documentation
 ```
 
+## 🚀 Setup & Deployment Guide
+
+### Prerequisites
+- AWS Account with appropriate permissions
+- GitHub Account
+- Basic understanding of Docker and AWS services
+
+### Step 1: Launch EC2 Instance for Build Server
+
+```bash
+# Launch EC2 instance (Amazon Linux 2023 or Ubuntu 22.04)
+# Instance type: t3.medium (2 vCPU, 4GB RAM)
+# Storage: 20-30 GB
+# Security Group: Allow SSH (port 22) from your IP
+
+# Connect via SSH
+ssh -i your-key.pem ec2-user@<EC2-PUBLIC-IP>
+```
+
+### Step 2: Install Docker
+
+**For Amazon Linux 2023:**
+```bash
+# Update system
+sudo yum update -y
+
+# Install Docker
+sudo yum install docker -y
+
+# Start Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Add user to docker group (no need for sudo)
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Verify installation
+docker --version
+```
+
+**For Ubuntu:**
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install Docker
+sudo apt install docker.io -y
+
+# Start Docker service
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Add user to docker group
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Verify installation
+docker --version
+```
+
+### Step 3: Install AWS CLI
+
+```bash
+# Download AWS CLI v2
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+
+# Install unzip if not available
+sudo yum install unzip -y  # Amazon Linux
+# OR
+sudo apt install unzip -y  # Ubuntu
+
+# Unzip and install
+unzip awscliv2.zip
+sudo ./aws/install
+
+# Verify installation
+aws --version
+```
+
+### Step 4: Configure AWS CLI
+
+```bash
+# Configure AWS credentials
+aws configure
+
+# Enter the following when prompted:
+# AWS Access Key ID: YOUR_ACCESS_KEY
+# AWS Secret Access Key: YOUR_SECRET_KEY
+# Default region name: us-east-1
+# Default output format: json
+
+# Verify configuration
+aws sts get-caller-identity
+```
+
+### Step 5: Install Git
+
+```bash
+# Amazon Linux
+sudo yum install git -y
+
+# Ubuntu
+sudo apt install git -y
+
+# Verify installation
+git --version
+```
+
+### Step 6: Clone Repository
+
+```bash
+# Clone the project
+git clone https://github.com/Rishabh1623/rushplate-cicd-pipeline.git
+cd rushplate-cicd-pipeline/rushplate
+
+# Verify files
+ls -la
+```
+
+### Step 7: Create AWS Resources
+
+#### 7.1 Create ECR Repository
+```bash
+# Create ECR repository for Docker images
+aws ecr create-repository \
+  --repository-name rush-plate \
+  --region us-east-1 \
+  --image-scanning-configuration scanOnPush=true
+
+# Note the repositoryUri from output
+```
+
+#### 7.2 Build and Push Initial Docker Image
+```bash
+# Get AWS account ID
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+AWS_REGION=us-east-1
+ECR_REPO=rush-plate
+
+# Build Docker image
+docker build -t rushplate:latest .
+
+# Tag for ECR
+docker tag rushplate:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:latest
+
+# Login to ECR
+aws ecr get-login-password --region $AWS_REGION | \
+  docker login --username AWS --password-stdin \
+  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+# Push image to ECR
+docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:latest
+```
+
+#### 7.3 Create IAM Roles
+
+**ECS Task Execution Role:**
+```bash
+# Create trust policy file
+cat > trust-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+    "Action": "sts:AssumeRole"
+  }]
+}
+EOF
+
+# Create role
+aws iam create-role \
+  --role-name ecsTaskExecutionRole \
+  --assume-role-policy-document file://trust-policy.json
+
+# Attach managed policy
+aws iam attach-role-policy \
+  --role-name ecsTaskExecutionRole \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+```
+
+#### 7.4 Create ECS Cluster
+```bash
+# Create Fargate cluster
+aws ecs create-cluster \
+  --cluster-name Rush-Plate-Cluster \
+  --capacity-providers FARGATE FARGATE_SPOT \
+  --region us-east-1
+```
+
+#### 7.5 Create CloudWatch Log Group
+```bash
+# Create log group for container logs
+aws logs create-log-group \
+  --log-group-name /ecs/rushplate \
+  --region us-east-1
+```
+
+#### 7.6 Register ECS Task Definition
+```bash
+# Create task definition JSON
+cat > task-definition.json <<EOF
+{
+  "family": "rush-plate-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::$AWS_ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "containerDefinitions": [{
+    "name": "rush-plate-container",
+    "image": "$AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/rush-plate:latest",
+    "portMappings": [{
+      "containerPort": 80,
+      "protocol": "tcp"
+    }],
+    "essential": true,
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {
+        "awslogs-group": "/ecs/rushplate",
+        "awslogs-region": "us-east-1",
+        "awslogs-stream-prefix": "ecs"
+      }
+    }
+  }]
+}
+EOF
+
+# Register task definition
+aws ecs register-task-definition \
+  --cli-input-json file://task-definition.json
+```
+
+#### 7.7 Create ECS Service
+```bash
+# Create service (replace subnet and security group IDs)
+aws ecs create-service \
+  --cluster Rush-Plate-Cluster \
+  --service-name rush-plate-service \
+  --task-definition rush-plate-task \
+  --desired-count 1 \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-xxxxx],securityGroups=[sg-xxxxx],assignPublicIp=ENABLED}" \
+  --region us-east-1
+```
+
+### Step 8: Set Up CI/CD Pipeline
+
+#### 8.1 Create CodeBuild Project
+```bash
+# Create CodeBuild service role first (via IAM console or CLI)
+# Then create CodeBuild project
+
+aws codebuild create-project \
+  --name rushplate-build \
+  --source type=GITHUB,location=https://github.com/Rishabh1623/rushplate-cicd-pipeline.git \
+  --artifacts type=CODEPIPELINE \
+  --environment type=LINUX_CONTAINER,image=aws/codebuild/standard:7.0,computeType=BUILD_GENERAL1_SMALL,privilegedMode=true \
+  --service-role arn:aws:iam::$AWS_ACCOUNT_ID:role/codebuild-service-role \
+  --region us-east-1
+```
+
+#### 8.2 Create CodePipeline
+```bash
+# Create pipeline via AWS Console:
+# 1. Go to CodePipeline → Create pipeline
+# 2. Pipeline name: rush-plate-pipeline
+# 3. Source: GitHub (connect your repository)
+# 4. Build: CodeBuild (select rushplate-build project)
+# 5. Deploy: Amazon ECS (select cluster and service)
+```
+
+### Step 9: Test the Pipeline
+
+```bash
+# Make a small change to trigger pipeline
+cd rushplate-cicd-pipeline
+echo "# Test change" >> README.md
+git add README.md
+git commit -m "Test pipeline trigger"
+git push origin main
+
+# Watch pipeline execution in AWS Console
+# Pipeline URL: https://console.aws.amazon.com/codesuite/codepipeline/pipelines
+```
+
+### Step 10: Access Your Application
+
+```bash
+# Get the public IP of your ECS task
+aws ecs list-tasks --cluster Rush-Plate-Cluster --region us-east-1
+
+# Describe task to get network details
+aws ecs describe-tasks \
+  --cluster Rush-Plate-Cluster \
+  --tasks <TASK-ARN> \
+  --region us-east-1
+
+# Access application
+curl http://<PUBLIC-IP>/health
+# Or open in browser: http://<PUBLIC-IP>/
+```
+
 ## 🧪 API Endpoints
 
 ### Health & Monitoring
